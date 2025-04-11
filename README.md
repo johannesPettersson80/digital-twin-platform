@@ -11,6 +11,7 @@ A web-based platform for creating digital twins of machines, enabling simulation
 *   **Hardware-in-the-Loop (HIL):** Connect simulations to real-world hardware via OPC UA communication bindings.
 *   **RESTful API:** Manage projects, models, components, connections, simulations, and communication bindings via a FastAPI backend.
 *   **Database Persistence:** Uses SQLAlchemy and Alembic for robust data storage and schema migrations (SQLite backend).
+*   **FMU Integration (Basic):** Supports loading and simulating Functional Mock-up Units (FMUs) via FMPy (requires testing and API/UI).
 *   **(Planned) Web Frontend:** A user-friendly interface for interacting with the platform (details TBD).
 
 ## Technology Stack
@@ -19,6 +20,7 @@ A web-based platform for creating digital twins of machines, enabling simulation
 *   **Database:** SQLAlchemy, Alembic, SQLite (initially)
 *   **Communication:** Asyncua (for OPC UA)
 *   **Modeling:** Pydantic
+*   **FMU Handling:** FMPy
 
 <!--
 ## Development Status (as of 2025-04-11)
@@ -27,6 +29,7 @@ A web-based platform for creating digital twins of machines, enabling simulation
 *   **Core Backend & Modeling:** Complete (Projects, Models, Components, Connections API/DB).
 *   **Basic Simulation:** Mostly Complete (Simulation service, API, basic component logic, topological sort).
 *   **Communication & HIL (OPC UA):** Implementation complete, requires testing and refinement.
+*   **FMU Integration:** Basic simulation service integration complete (loading, stepping, cleanup via FMPy). Requires API/UI for management and testing.
 
 (Consider moving detailed status history to a CHANGELOG.md)
 -->

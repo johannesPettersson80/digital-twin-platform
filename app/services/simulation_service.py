@@ -3,10 +3,15 @@
 import asyncio
 import time
 import math # For sine wave example
+import logging # Ensure logging is imported
 from typing import Dict, Any, Optional, List
 from collections import deque, defaultdict
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+import fmpy # Import fmpy for FMU handling
+from fmpy.fmi2 import FMU2Slave # Specific type for FMI 2.0 Co-Simulation
+
+logger = logging.getLogger(__name__) # Ensure logger is defined
 
 # Import CRUD and models/schemas needed for loading
 from app.crud import crud_component, crud_connection, crud_communication_binding
@@ -37,8 +42,8 @@ class SimulationState(BaseModel):
     component_states: Dict[int, Dict[str, Any]] = {} # Store state/outputs from the *previous* step {component_id: {"output_value": ...}}
     execution_order: List[int] = [] # Order in which to execute components
     error_message: Optional[str] = None
-    # Add reference to the communication service instance used by this simulation
     comm_service: Optional[CommunicationService] = None # Runtime reference, not serialized
+    fmu_instances: Dict[int, FMU2Slave] = {} # Store instantiated FMU models {component_id: fmu_instance}
 
     model_config = {
         "arbitrary_types_allowed": True
@@ -110,7 +115,8 @@ async def create_and_start_simulation(db: Session, machine_model_id: int, simula
         communication_bindings=loaded_bindings, # Add loaded bindings
         component_states={comp.id: {} for comp in loaded_components}, # Initialize state dict
         execution_order=[], # Will be populated below
-        comm_service=communication_service if simulation_mode == "hil" else None # Assign comm service if HIL
+        comm_service=communication_service if simulation_mode == "hil" else None, # Assign comm service if HIL
+        fmu_instances={} # Initialize FMU instance dictionary
     )
     _active_simulations[sim_id] = new_sim
 
@@ -128,20 +134,84 @@ async def create_and_start_simulation(db: Session, machine_model_id: int, simula
         # Don't start the loop if order calculation fails critically
         # return new_sim # Or raise an error
 
-    # Initialize communication service if in HIL mode and bindings exist
-    if simulation_mode == "hil" and new_sim.comm_service and new_sim.communication_bindings:
-        print(f"Service: Initializing Communication Service for sim {sim_id}")
+    # --- Initialize FMUs ---
+    fmu_load_successful = True
+    for comp in new_sim.components:
+        if comp.type == 'FMU':
+            fmu_path = comp.config.get('fmu_path') if comp.config else None
+            if not fmu_path:
+                logger.error(f"FMU component {comp.id} ('{comp.name}') is missing 'fmu_path' in config.")
+                new_sim.status = "error"
+                new_sim.error_message = f"FMU component {comp.id} missing fmu_path."
+                fmu_load_successful = False
+                break # Stop loading FMUs if one fails critically
+
+            logger.info(f"Loading FMU for component {comp.id} from path: {fmu_path}")
+            try:
+                # 1. Read model description
+                model_description = fmpy.read_model_description(fmu_path)
+
+                # 2. Extract GUID
+                guid = model_description.guid
+
+                # 3. Unpack FMU
+                unzipdir = fmpy.extract(fmu_path)
+
+                # 4. Instantiate FMU (assuming FMI 2.0 Co-Simulation)
+                # TODO: Add logic to handle FMI versions and types (ModelExchange vs CoSimulation)
+                fmu_instance = FMU2Slave(guid=guid,
+                                         unzipDirectory=unzipdir,
+                                         modelIdentifier=model_description.coSimulation.modelIdentifier,
+                                         instanceName=comp.name) # Use component name for instance name
+                fmu_instance.instantiate()
+                logger.info(f"Instantiated FMU for component {comp.id} ('{comp.name}')")
+
+                # TODO: Setup experiment (optional, depends on FMU needs)
+                # fmu_instance.setupExperiment(startTime=0.0)
+
+                # TODO: Enter initialization mode (optional, depends on FMU needs)
+                # fmu_instance.enterInitializationMode()
+                # fmu_instance.exitInitializationMode()
+
+                # Store the instance
+                new_sim.fmu_instances[comp.id] = fmu_instance
+
+            except Exception as e:
+                logger.error(f"Failed to load or instantiate FMU '{fmu_path}' for component {comp.id}: {e}", exc_info=True)
+                new_sim.status = "error"
+                new_sim.error_message = f"Failed to load FMU for component {comp.id}: {e}"
+                fmu_load_successful = False
+                # Clean up already loaded FMUs before breaking
+                for loaded_fmu_id, loaded_fmu_instance in new_sim.fmu_instances.items():
+                    try:
+                        loaded_fmu_instance.terminate()
+                        loaded_fmu_instance.freeInstance()
+                    except Exception as cleanup_err:
+                        logger.error(f"Error cleaning up FMU instance for component {loaded_fmu_id} after load failure: {cleanup_err}")
+                new_sim.fmu_instances.clear()
+                break # Stop loading further FMUs
+
+    # --- Initialize Communication Service (only if FMUs loaded successfully) ---
+    if fmu_load_successful and simulation_mode == "hil" and new_sim.comm_service and new_sim.communication_bindings:
+        logger.info(f"Initializing Communication Service for sim {sim_id}")
         try:
             await new_sim.comm_service.initialize_connections(new_sim.communication_bindings)
-            print(f"Service: Communication Service initialized for sim {sim_id}")
+            logger.info(f"Communication Service initialized for sim {sim_id}")
         except Exception as e:
-            print(f"Service Error: Failed to initialize Communication Service for sim {sim_id}: {e}")
+            logger.error(f"Failed to initialize Communication Service for sim {sim_id}: {e}")
             new_sim.status = "error"
             new_sim.error_message = f"Failed to initialize communication: {e}"
             # Clean up potentially partially initialized comm service?
             if new_sim.comm_service:
                  await new_sim.comm_service.disconnect_all() # Attempt cleanup
-
+            # Also clean up FMUs if comms init fails
+            for fmu_instance in new_sim.fmu_instances.values():
+                try:
+                    fmu_instance.terminate()
+                    fmu_instance.freeInstance()
+                except Exception as fmu_cleanup_err:
+                    logger.error(f"Error cleaning up FMU instance after comms failure: {fmu_cleanup_err}")
+            new_sim.fmu_instances.clear()
     # Start the simulation loop in the background only if status is not error
     if new_sim.status != "error":
         # Pass the simulation mode to the loop runner
@@ -331,32 +401,47 @@ async def _run_simulation_loop(simulation_id: int, simulation_mode: str):
                 elif comp_type == 'Heater':
                     # Basic Heater Logic: Increase temperature towards a setpoint, potentially driven by input
                     # Configurable parameters (with defaults)
-                    config_setpoint = comp_config.get('setpoint', 50.0) # Default/config setpoint
-                    heating_rate = comp_config.get('heating_rate', 5.0) # degrees per second
-                    initial_temp = comp_config.get('initial_temp', 20.0)
+                    # --- Heater Logic ---
+                    # Configurable parameters (with defaults)
+                    config_setpoint = comp_config.get('setpoint', 50.0)
+                    heating_rate = comp_config.get('heating_rate', 5.0) # degrees per second when heating
+                    cooling_rate = comp_config.get('cooling_rate', 1.0) # degrees per second when cooling
+                    ambient_temp = comp_config.get('ambient_temp', 20.0) # Minimum temperature
+                    initial_temp = comp_config.get('initial_temp', ambient_temp)
                     time_step = 1.0 # Corresponds to asyncio.sleep(1.0) later
 
-                    # Get previous state from the main state dictionary (previous step)
+                    # Get previous state
                     previous_step_state = sim.component_states.get(comp_id, {})
                     current_temp = previous_step_state.get('temperature', initial_temp)
 
-                    # Determine the target setpoint: Use input port 'setpoint' if available, otherwise use config
-                    target_setpoint = config_setpoint # Default to config
+                    # Determine the target setpoint (from input or config)
+                    target_setpoint = config_setpoint
                     input_setpoint = inputs.get('setpoint') # Assuming target port is named 'setpoint'
                     if input_setpoint is not None and isinstance(input_setpoint, (int, float)):
                         target_setpoint = input_setpoint
-                        # print(f"  Heater {comp_info.name} using input setpoint: {target_setpoint}") # Verbose
+                        # logger.debug(f"  Heater {comp_info.name} using input setpoint: {target_setpoint}")
 
-                    # Calculate new temperature based on the target_setpoint
+                    # Calculate new temperature
                     new_temp = current_temp
+                    delta_temp = 0.0
                     if current_temp < target_setpoint:
+                        # Heating
                         increase = heating_rate * time_step
                         potential_temp = current_temp + increase
-                        new_temp = min(potential_temp, target_setpoint) # Don't overshoot target setpoint
-                    # Optional: Add cooling logic if needed
+                        new_temp = min(potential_temp, target_setpoint) # Don't overshoot target
+                        delta_temp = new_temp - current_temp
+                    elif current_temp > target_setpoint:
+                        # Cooling
+                        decrease = cooling_rate * time_step
+                        potential_temp = current_temp - decrease
+                        # Ensure we don't cool below ambient or the target setpoint if it's higher than ambient
+                        floor_temp = max(ambient_temp, target_setpoint if target_setpoint > ambient_temp else ambient_temp)
+                        new_temp = max(potential_temp, floor_temp) # Don't undershoot floor
+                        delta_temp = new_temp - current_temp
+
+                    # logger.debug(f"  Heater {comp_info.name} ({comp_id}): Current={current_temp:.2f}, Target={target_setpoint:.2f}, Delta={delta_temp:.2f}, New={new_temp:.2f}")
 
                     output_state = {"temperature": new_temp} # Output port named 'temperature'
-                    # print(f"  Heater {comp_info.name} ({comp_id}): {new_temp:.2f}°C") # Verbose logging
 
                 elif comp_type == 'Actuator':
                     # Basic Actuator Logic: Turn On/Off based on input threshold
@@ -404,9 +489,87 @@ async def _run_simulation_loop(simulation_id: int, simulation_mode: str):
                     output_state = {"Flow": valve_flow} # Output port named 'Flow'
                     # print(f"  Valve {comp_info.name} ({comp_id}): Flow={valve_flow}") # Verbose logging
 
+                elif comp_type == 'FMU':
+                    # --- FMU Execution Logic ---
+                    fmu_instance = sim.fmu_instances.get(comp_id)
+                    if not fmu_instance:
+                        logger.warning(f"FMU instance for component {comp_id} not found in simulation state. Skipping.")
+                        output_state = {"status": "error_fmu_not_found"}
+                    else:
+                        try:
+                            # 1. Set FMU inputs based on gathered inputs
+                            #    Assumption: Input port name == FMU variable name, Type == Real
+                            #    TODO: Need proper mapping from port name to FMU variable ValueReference and type handling
+                            input_vars = [] # Collect variable names for logging/debugging
+                            for port_name, value in inputs.items():
+                                try:
+                                    # Attempt to get variable by name (less efficient but simpler for now)
+                                    # A better approach uses ValueReferences obtained during loading
+                                    variable = fmu_instance.modelDescription.modelVariables[port_name]
+                                    vr = [variable.valueReference]
+                                    # Basic type handling (extend as needed)
+                                    if variable.type == 'Real':
+                                        fmu_instance.setReal(vr, [float(value)])
+                                    elif variable.type == 'Integer' or variable.type == 'Enumeration':
+                                         fmu_instance.setInteger(vr, [int(value)])
+                                    elif variable.type == 'Boolean':
+                                         fmu_instance.setBoolean(vr, [bool(value)])
+                                    # Add String etc. if needed
+                                    else:
+                                         logger.warning(f"FMU {comp_id}: Unsupported input variable type '{variable.type}' for variable '{port_name}'. Skipping set.")
+                                         continue
+                                    input_vars.append(f"{port_name}={value}")
+                                except KeyError:
+                                     logger.warning(f"FMU {comp_id}: Input variable '{port_name}' not found in FMU model description. Skipping set.")
+                                except Exception as set_err:
+                                    logger.error(f"FMU {comp_id}: Error setting input '{port_name}' to {value}: {set_err}")
+
+
+                            # 2. Perform simulation step
+                            step_size = 1.0 # Matches asyncio.sleep duration
+                            # currentCommunicationPoint is the time at the beginning of the step
+                            comm_point = current_time
+                            # logger.debug(f"  FMU {comp_id}: doStep(current={comm_point:.3f}, stepSize={step_size}) Inputs: {', '.join(input_vars)}")
+                            status = fmu_instance.doStep(currentCommunicationPoint=comm_point, communicationStepSize=step_size)
+                            if status != fmpy.fmi2OK:
+                                logger.error(f"FMU {comp_id}: doStep failed with status {status}")
+                                # Handle error, maybe stop simulation?
+                                output_state = {"status": f"error_doStep_{status}"}
+                            else:
+                                # 3. Get FMU outputs
+                                #    Assumption: Output port name == FMU variable name, Type == Real
+                                #    TODO: Need proper mapping and type handling using ValueReferences
+                                output_state = {}
+                                for variable in fmu_instance.modelDescription.modelVariables:
+                                    # Simple check if variable is an output (causality='output')
+                                    # This assumes component ports are named exactly like FMU output variables
+                                    if variable.causality == 'output':
+                                        vr = [variable.valueReference]
+                                        var_name = variable.name
+                                        try:
+                                            if variable.type == 'Real':
+                                                value = fmu_instance.getReal(vr)[0]
+                                            elif variable.type == 'Integer' or variable.type == 'Enumeration':
+                                                value = fmu_instance.getInteger(vr)[0]
+                                            elif variable.type == 'Boolean':
+                                                value = fmu_instance.getBoolean(vr)[0]
+                                            # Add String etc. if needed
+                                            else:
+                                                logger.warning(f"FMU {comp_id}: Unsupported output variable type '{variable.type}' for variable '{var_name}'. Skipping get.")
+                                                continue
+                                            output_state[var_name] = value
+                                        except Exception as get_err:
+                                             logger.error(f"FMU {comp_id}: Error getting output '{var_name}': {get_err}")
+                                # logger.debug(f"  FMU {comp_id}: Outputs: {output_state}")
+
+                        except Exception as fmu_err:
+                            logger.error(f"Error during FMU execution for component {comp_id}: {fmu_err}", exc_info=True)
+                            output_state = {"status": "error_fmu_execution"}
+
                 # Add more component types here...
                 else:
                     # Unknown component type
+                    logger.warning(f"Unknown component type '{comp_type}' encountered for component {comp_id}.")
                     output_state = {"status": "unknown_type"}
 
                 # Store the calculated state for *this* step in the temporary dictionary
@@ -461,11 +624,38 @@ async def _run_simulation_loop(simulation_id: int, simulation_mode: str):
         sim.error_message = str(e)
         print(f"Service Loop Error [{simulation_id}]: {e}")
     finally:
-        # Ensure communication service is disconnected if it was used
-        if sim and sim.comm_service:
-            print(f"Service Loop [{simulation_id}]: Cleaning up communication service...")
-            await sim.comm_service.disconnect_all()
-            print(f"Service Loop [{simulation_id}]: Communication service cleanup complete.")
+        # --- Cleanup ---
+        if sim: # Ensure sim object exists
+            logger.info(f"Simulation {simulation_id} loop ending with status: {sim.status}. Starting cleanup.")
+            # 1. Clean up FMU instances
+            if sim.fmu_instances:
+                logger.info(f"Terminating and freeing {len(sim.fmu_instances)} FMU instance(s) for sim {simulation_id}...")
+                for comp_id, fmu_instance in sim.fmu_instances.items():
+                    try:
+                        fmu_instance.terminate()
+                        fmu_instance.freeInstance()
+                        logger.debug(f"Cleaned up FMU for component {comp_id}.")
+                    except Exception as fmu_cleanup_err:
+                        logger.error(f"Error cleaning up FMU instance for component {comp_id}: {fmu_cleanup_err}")
+                sim.fmu_instances.clear() # Clear the dictionary after attempting cleanup
+
+            # 2. Clean up Communication Service
+            if sim.comm_service:
+                logger.info(f"Cleaning up communication service for sim {simulation_id}...")
+                try:
+                    await sim.comm_service.disconnect_all()
+                    logger.info(f"Communication service cleanup complete for sim {simulation_id}.")
+                except Exception as comm_cleanup_err:
+                     logger.error(f"Error cleaning up communication service for sim {simulation_id}: {comm_cleanup_err}")
+
+            # 3. Update final status if not already error/stopped
+            if sim.status not in ["error", "stopped"]:
+                 logger.warning(f"Simulation {simulation_id} loop exited unexpectedly with status {sim.status}. Setting to 'stopped'.")
+                 sim.status = "stopped" # Ensure final status is set
+
+            logger.info(f"Simulation {simulation_id} cleanup finished. Final status: {sim.status}")
+        else:
+             logger.error(f"Simulation {simulation_id} loop ended but sim object was not found for cleanup.")
+
         # Remove simulation from active list? Or keep for final state inspection?
         # For now, keep it but ensure status reflects final state (stopped/error)
-        print(f"Service Loop [{simulation_id}]: Final state: {sim.status if sim else 'Unknown'}")

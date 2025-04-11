@@ -7,3 +7,4 @@ python-dotenv
 alembic
 requests
 asyncua # For OPC UA communication (Phase 3)
+10| fmpy # For FMU integration (Phase 4)

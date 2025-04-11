@@ -1,6 +1,6 @@
 # Digital Twin & Testing Platform - Project Documentation
 
-**Last Updated:** 2025-04-11 ~3:54 PM (Implemented core OPC UA logic and HIL integration in services)
+**Last Updated:** 2025-04-11 ~10:18 PM (Added basic FMU integration to SimulationService)
 
 This document provides a comprehensive overview of the Digital Twin & Testing Platform project, intended to facilitate understanding and future development.
 
@@ -11,6 +11,7 @@ This document provides a comprehensive overview of the Digital Twin & Testing Pl
     *   **Backend:** Python 3.x, FastAPI
     *   **Database:** SQLite (via SQLAlchemy and Alembic for migrations)
     *   **Configuration:** Pydantic Settings, `.env` files
+    *   **FMU Handling:** FMPy (for Phase 4)
     *   **Frontend:** TBD (React/Vue/Angular proposed)
 *   **Current Status (as of 2025-04-11 ~3:54 PM):**
     *   Phase 1 (Core Backend & Modeling) is complete.
@@ -36,6 +37,9 @@ This document provides a comprehensive overview of the Digital Twin & Testing Pl
         *   Created `CommunicationService` (`app/services/communication_service.py`). **(DONE)**
         *   Implemented core OPC UA connection, subscription, read/write logic in `CommunicationService`. **(DONE)**
         *   Integrated `CommunicationService` into `SimulationService` to enable HIL mode (`simulation_mode='hil'`). **(DONE)**
+    *   Phase 4 (FMU Integration) is in progress:
+        *   Added `fmpy` dependency to `requirements.txt`. **(DONE)**
+        *   Integrated basic FMU loading, stepping, and cleanup into `SimulationService`. **(DONE)**
 ## 2. Setup & Running Locally
 
 Follow these steps to set up the development environment and run the application:
@@ -253,7 +257,10 @@ Based on `README.md` and `ARCHITECTURE.md`:
     *   Implemented core OPC UA connection, subscription, read/write logic in `CommunicationService`. **(DONE)**
     *   Integrated `CommunicationService` into `SimulationService` for HIL mode. **(DONE)**
     *   *Next steps for Phase 3:* Test and refine HIL simulation with actual bindings and a running OPC UA server. Debug communication logic.
-5.  **Phase 4: FMU Integration:** Add support for importing and simulating FMUs.
+5.  **Phase 4: FMU Integration:** Add support for importing and simulating FMUs. **(In Progress)**
+    *   Added `fmpy` dependency. **(DONE)**
+    *   Integrated basic FMU loading, instantiation, `doStep`, and cleanup logic into `SimulationService`. **(DONE)**
+    *   *Next steps for Phase 4:* Implement API/UI for managing FMU files, refine variable mapping/type handling, add testing (unit tests or with actual FMUs).
 6.  **Phase 5: Test Automation:** Develop the test execution service and UI.
 7.  **Frontend Development:** Design and implement the user interface (Technology TBD).
 
