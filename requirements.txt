@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic[email]
+python-dotenv
+# psycopg2-binary # Removed for SQLite
+alembic
+requests
+asyncua # For OPC UA communication (Phase 3)
