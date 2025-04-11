@@ -1,30 +1,35 @@
 # Digital Twin & Testing Platform
 
-This project aims to build a web-based system for testing and simulating machines, inspired by OpenCommissioning but with a focus on ease of use.
+A web-based platform for creating digital twins of machines, enabling simulation, testing, and hardware-in-the-loop (HIL) validation. Inspired by OpenCommissioning, this project prioritizes ease of use and a modern technology stack.
 
-## Current Status (as of 2025-04-11 ~3:54 PM)
+**Target Audience:** Automation engineers, machine builders, simulation specialists, educators.
+
+## Key Features
+
+*   **Model Definition:** Define machine components, connections, and properties through a structured API.
+*   **Simulation Engine:** Run discrete-time simulations based on defined models and component logic. Supports dependency-aware execution order via topological sort.
+*   **Hardware-in-the-Loop (HIL):** Connect simulations to real-world hardware via OPC UA communication bindings.
+*   **RESTful API:** Manage projects, models, components, connections, simulations, and communication bindings via a FastAPI backend.
+*   **Database Persistence:** Uses SQLAlchemy and Alembic for robust data storage and schema migrations (SQLite backend).
+*   **(Planned) Web Frontend:** A user-friendly interface for interacting with the platform (details TBD).
+
+## Technology Stack
+
+*   **Backend:** Python, FastAPI, Uvicorn
+*   **Database:** SQLAlchemy, Alembic, SQLite (initially)
+*   **Communication:** Asyncua (for OPC UA)
+*   **Modeling:** Pydantic
+
+<!--
+## Development Status (as of 2025-04-11)
 
 *   **Architecture:** Defined in `ARCHITECTURE.md`. Uses a Python/FastAPI backend, a web frontend (TBD), and SQLite for the database.
-*   **Phase 1 (Core Backend & Modeling):** Complete.
-    *   FastAPI application structure is set up (`app/main.py`).
-    *   Configuration uses Pydantic and `.env` files (`app/core/config.py`).
-    *   Database connection uses SQLAlchemy with SQLite (`app/db/session.py`).
-    *   Resources implemented (Model, Schema, CRUD, API Endpoint): `Project`, `MachineModel`, `Component`, `Connection`.
-    *   Alembic is configured and all migrations are applied (`alembic upgrade head`).
-*   **Phase 2 (Basic Simulation):** Mostly Complete.
-    *   Simulation service created (`app/services/simulation_service.py`).
-    *   Simulation API endpoints implemented (`/api/v1/simulations/start`, `/stop`, `/{id}/status`).
-    *   Basic component logic implemented for 'Sensor', 'Heater', 'Actuator', 'Valve'.
-    *   Refined connection handling: Added `source_port`/`target_port` to connections.
-    *   **Simulation loop improved:** Now uses topological sort to handle execution dependencies (`app/services/simulation_service.py`).
-*   **Phase 3 (Communication & HIL):** In Progress.
-    *   Added `asyncua` dependency for OPC UA. **(DONE)**
-    *   Implemented `CommunicationBinding` resource (Model, Schema, CRUD, API). **(DONE)**
-    *   Added Alembic migration for `communication_bindings` table. **(DONE)**
-    *   Created `CommunicationService` (`app/services/communication_service.py`). **(DONE)**
-    *   Implemented core OPC UA connection, subscription, read/write logic in `CommunicationService`. **(DONE)**
-    *   Integrated `CommunicationService` into `SimulationService` to enable HIL mode (`simulation_mode='hil'`). **(DONE)**
+*   **Core Backend & Modeling:** Complete (Projects, Models, Components, Connections API/DB).
+*   **Basic Simulation:** Mostly Complete (Simulation service, API, basic component logic, topological sort).
+*   **Communication & HIL (OPC UA):** Implementation complete, requires testing and refinement.
 
+(Consider moving detailed status history to a CHANGELOG.md)
+-->
 ## Setup & Running Locally
 
 1.  **Navigate to Project Root:**
@@ -77,11 +82,28 @@ This project aims to build a web-based system for testing and simulating machine
     alembic downgrade base # Downgrade all
     ```
 
-## Next Steps
+<!--
+## Next Steps / Roadmap
 
-*   Test and refine Phase 3 (HIL):
-    *   Configure `CommunicationBinding`s for a test model.
-    *   Run simulations in `hil` mode against a running OPC UA server.
-    *   Debug and refine OPC UA connection, subscription, and read/write logic.
-*   Implement logic for more component types (Phase 2 refinement).
-*   Refer to `PROJECT_DOCS.md` and `ARCHITECTURE.md` for more details.
+*   Test and refine HIL functionality with real OPC UA servers.
+*   Implement logic for a wider variety of component types.
+*   Develop the web frontend.
+*   Add comprehensive unit and integration tests.
+*   Explore alternative database backends (e.g., PostgreSQL).
+*   Define clear contribution guidelines.
+*   Choose and add a project license.
+
+(Consider using GitHub Issues or Projects for detailed task tracking)
+-->
+
+## Contributing
+
+Contributions are welcome! Please refer to the `CONTRIBUTING.md` file (to be created) for guidelines.
+
+## License
+
+This project is currently unlicensed. A license will be added soon.
+
+## Further Documentation
+
+Refer to `PROJECT_DOCS.md` and `ARCHITECTURE.md` for more in-depth technical details.
